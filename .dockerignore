@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+nn_data/
+dn_data*/
+tests/
+.git/
+*.zip
