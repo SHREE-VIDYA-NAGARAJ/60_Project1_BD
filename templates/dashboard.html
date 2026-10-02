@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mini HDFS</title>
+<style>
+  :root {
+    --ground: #e9edf1; --panel: #f8fafb; --ink: #16202b; --muted: #5b6b7a;
+    --line: #cbd3db; --ok: #1b7f5f; --warn: #a86500; --bad: #c2452d; --accent: #2b59ff;
+    --cell-empty: #dde3e9;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ground: #11171d; --panel: #1a222b; --ink: #e6ebf0; --muted: #93a2b1;
+            --line: #2c3743; --ok: #43c597; --warn: #e0a340; --bad: #ef7a63; --accent: #7b99ff;
+            --cell-empty: #26303b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font: 15px/1.5 var(--sans); }
+  header { padding: 28px 32px 8px; display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 26px; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  .cluster { color: var(--muted); font: 13px var(--mono); }
+  #sentence { padding: 0 32px 20px; font-size: 18px; max-width: 70ch; min-height: 2em; }
+  #sentence.warn { color: var(--warn); } #sentence.bad { color: var(--bad); } #sentence.ok { color: var(--ok); }
+  main { display: grid; grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr); gap: 20px; padding: 0 32px 40px; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 0 16px 32px; } header, #sentence { padding-left: 16px; padding-right: 16px; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; }
+  .node { padding: 12px 0; border-top: 1px solid var(--line); }
+  .node:first-of-type { border-top: 0; padding-top: 0; }
+  .node-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); flex: none; align-self: center; }
+  .node.dead .dot { background: var(--bad); }
+  .node.dead .node-id { text-decoration: line-through; color: var(--muted); }
+  .node-id { font: 600 14px var(--mono); }
+  .meta { color: var(--muted); font-size: 13px; }
+  .state-dead { color: var(--bad); font-size: 13px; }
+  .cells { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 8px; min-height: 16px; }
+  .cell { width: 16px; height: 16px; border-radius: 3px; transition: opacity .15s, outline-color .15s; outline: 2px solid transparent; outline-offset: 1px; }
+  .cells.has-selection .cell { opacity: .22; }
+  .cells.has-selection .cell.sel { opacity: 1; outline-color: var(--ink); }
+  .cells .more { color: var(--muted); font-size: 12px; align-self: center; }
+  .empty { color: var(--muted); }
+  #drop { border: 1.5px dashed var(--line); border-radius: 8px; padding: 18px; text-align: center; color: var(--muted); cursor: pointer; margin-bottom: 14px; }
+  #drop.over, #drop:focus-visible { border-color: var(--accent); color: var(--ink); outline: none; }
+  #progress { height: 6px; background: var(--cell-empty); border-radius: 3px; overflow: hidden; margin-bottom: 14px; display: none; }
+  #progress > div { height: 100%; width: 0; background: var(--accent); }
+  #msg { min-height: 1.4em; margin: 0 0 10px; font-size: 14px; }
+  #msg.err { color: var(--bad); }
+  .file { display: grid; grid-template-columns: 14px 1fr auto; gap: 4px 10px; padding: 10px 8px; margin: 0 -8px; border-radius: 8px; cursor: pointer; }
+  .file:hover { background: var(--ground); }
+  .file.selected { background: var(--ground); outline: 2px solid var(--accent); }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; margin-top: 6px; }
+  .fname { font-weight: 600; overflow-wrap: anywhere; }
+  .fmeta { grid-column: 2; color: var(--muted); font-size: 13px; }
+  .fmeta .h-ok { color: var(--ok); } .fmeta .h-warn { color: var(--warn); } .fmeta .h-bad { color: var(--bad); }
+  .actions { grid-column: 3; grid-row: 1 / span 2; display: flex; gap: 6px; align-items: start; }
+  button, a.btn { font: inherit; font-size: 13px; padding: 4px 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; cursor: pointer; text-decoration: none; }
+  button:hover, a.btn:hover { border-color: var(--accent); }
+  button:focus-visible, a.btn:focus-visible, .file:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mini HDFS</h1>
+  <span class="cluster" id="cluster"></span>
+</header>
+<div id="sentence" role="status" aria-live="polite">Connecting to the NameNode…</div>
+
+<main>
+  <section aria-labelledby="nodes-h">
+    <h2 id="nodes-h">DataNodes</h2>
+    <p class="meta" style="margin-top:-6px">Each square is one block, coloured by file. Select a file to find its blocks.</p>
+    <div id="nodes"><p class="empty">No DataNodes have registered yet.</p></div>
+  </section>
+
+  <section aria-labelledby="files-h">
+    <h2 id="files-h">Files</h2>
+    <div id="drop" tabindex="0" role="button" aria-label="Choose a file to upload">
+      Drop a file here or click to choose one<br>
+      <span class="meta">Up to {{ max_upload_mb }} MB. It is split into blocks and copied to several DataNodes.</span>
+    </div>
+    <input type="file" id="picker" hidden>
+    <div id="progress"><div></div></div>
+    <p id="msg" role="status" aria-live="polite"></p>
+    <div id="files"><p class="empty">Nothing stored yet.</p></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let selected = null, lastStatus = null, uploading = false;
+
+const hue = (i) => `hsl(${(i * 137.5) % 360} 52% 50%)`;
+const fmtSize = (n) => n < 1024 ? n + " B" : n < 1048576 ? (n/1024).toFixed(1) + " KB"
+                      : n < 1073741824 ? (n/1048576).toFixed(1) + " MB" : (n/1073741824).toFixed(2) + " GB";
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+
+function sentence(st) {
+  const s = st.summary, box = $("sentence");
+  const total = s.live_nodes + s.dead_nodes;
+  let text, cls;
+  if (s.live_nodes === 0) { text = "No DataNodes are alive. Files cannot be read or written."; cls = "bad"; }
+  else if (s.missing > 0) { text = `${s.missing} block${s.missing > 1 ? "s have" : " has"} no live copy. Waiting for a DataNode that holds one to come back.`; cls = "bad"; }
+  else if (s.under_replicated > 0) { text = `${s.under_replicated} block${s.under_replicated > 1 ? "s are" : " is"} under-replicated. The NameNode is copying ${s.under_replicated > 1 ? "them" : "it"} to other nodes.`; cls = "warn"; }
+  else if (st.safe_mode) { text = "The NameNode just restarted and is collecting block reports."; cls = "warn"; }
+  else { text = `${s.live_nodes} of ${total} DataNodes live. ${s.blocks ? "Every block has its full number of copies." : "Ready for files."}`; cls = "ok"; }
+  box.textContent = text; box.className = cls;
+}
+
+function renderNodes(st) {
+  const box = $("nodes"); box.replaceChildren();
+  if (!st.nodes.length) { box.append(el("p", "empty", "No DataNodes have registered yet.")); return; }
+  const selIdx = selected == null ? -1 : st.files.findIndex(f => f.name === selected);
+  for (const n of st.nodes) {
+    const row = el("div", "node" + (n.alive ? "" : " dead"));
+    const head = el("div", "node-head");
+    head.append(el("span", "dot"), el("span", "node-id", n.id), el("span", "meta", `${n.host}:${n.port}`));
+    if (n.alive) {
+      const s = n.stats || {};
+      const bits = [`${n.num_blocks} block${n.num_blocks === 1 ? "" : "s"}`];
+      if (s.block_bytes != null) bits.push(fmtSize(s.block_bytes));
+      if (s.cpu_percent != null) bits.push(`CPU ${s.cpu_percent.toFixed(0)}%`);
+      if (s.memory_percent != null) bits.push(`mem ${s.memory_percent.toFixed(0)}%`);
+      bits.push(`heartbeat ${n.age.toFixed(0)}s ago`);
+      head.append(el("span", "meta", bits.join(", ")));
+    } else {
+      head.append(el("span", "state-dead", `no heartbeat for ${n.age.toFixed(0)}s, its blocks are being copied elsewhere`));
+    }
+    row.append(head);
+    const cells = el("div", "cells" + (selIdx >= 0 ? " has-selection" : ""));
+    for (const [fi, bi] of n.cells) {
+      const c = el("span", "cell" + (fi === selIdx ? " sel" : ""));
+      c.style.background = hue(fi);
+      c.title = `${st.files[fi].name}, block ${bi}`;
+      cells.append(c);
+    }
+    if (n.num_blocks > n.cells.length) cells.append(el("span", "more", `+${n.num_blocks - n.cells.length} more`));
+    row.append(cells);
+    box.append(row);
+  }
+}
+
+function renderFiles(st) {
+  const box = $("files"); box.replaceChildren();
+  if (!st.files.length) { box.append(el("p", "empty", "Nothing stored yet. Upload a file to see its blocks spread across the DataNodes.")); return; }
+  if (selected && !st.files.some(f => f.name === selected)) selected = null;
+  st.files.forEach((f, i) => {
+    const row = el("div", "file" + (f.name === selected ? " selected" : ""));
+    row.tabIndex = 0;
+    const sw = el("span", "swatch"); sw.style.background = hue(i);
+    row.append(sw, el("span", "fname", f.name));
+    let health, hc;
+    if (f.missing) { health = `${f.missing} block${f.missing > 1 ? "s" : ""} unavailable`; hc = "h-bad"; }
+    else if (f.under_replicated) { health = `${f.under_replicated} block${f.under_replicated > 1 ? "s" : ""} being re-copied`; hc = "h-warn"; }
+    else { health = `all blocks kept ${f.replication}×`; hc = "h-ok"; }
+    const meta = el("span", "fmeta");
+    meta.append(`${fmtSize(f.size)}, ${f.blocks} block${f.blocks === 1 ? "" : "s"}, `, el("span", hc, health));
+    row.append(meta);
+    const act = el("span", "actions");
+    const dl = el("a", "btn", "Download"); dl.href = "/download/" + encodeURIComponent(f.name);
+    dl.addEventListener("click", (e) => e.stopPropagation());
+    const rm = el("button", "danger", "Delete");
+    rm.addEventListener("click", (e) => { e.stopPropagation(); remove(f.name); });
+    act.append(dl, rm); row.append(act);
+    const pick = () => { selected = selected === f.name ? null : f.name; renderFiles(lastStatus); renderNodes(lastStatus); };
+    row.addEventListener("click", pick);
+    row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+    box.append(row);
+  });
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/status", { cache: "no-store" });
+    if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+    lastStatus = await r.json();
+    $("cluster").textContent = "cluster " + lastStatus.cluster_id.slice(0, 8);
+    sentence(lastStatus); renderNodes(lastStatus); renderFiles(lastStatus);
+  } catch (e) {
+    const box = $("sentence"); box.textContent = "Cannot reach the NameNode. " + e.message; box.className = "bad";
+  }
+}
+
+function say(text, isErr) { const m = $("msg"); m.textContent = text; m.className = isErr ? "err" : ""; }
+
+function upload(file) {
+  if (uploading || !file) return;
+  uploading = true; say(`Uploading ${file.name}…`);
+  const bar = $("progress"), fill = bar.firstElementChild; bar.style.display = "block"; fill.style.width = "0";
+  const fd = new FormData(); fd.append("file", file);
+  const x = new XMLHttpRequest();
+  x.open("POST", "/upload");
+  x.upload.onprogress = (e) => { if (e.lengthComputable) fill.style.width = (100 * e.loaded / e.total) + "%"; };
+  x.onload = () => {
+    let body = {}; try { body = JSON.parse(x.responseText); } catch (_) {}
+    if (x.status === 200) say(`Stored ${body.filename}: ${fmtSize(body.size)} in ${body.blocks} block${body.blocks === 1 ? "" : "s"}.`);
+    else say(body.error || `Upload failed (HTTP ${x.status}).`, true);
+    done();
+  };
+  x.onerror = () => { say("Upload failed: the connection to the web client was lost.", true); done(); };
+  const done = () => { uploading = false; bar.style.display = "none"; $("picker").value = ""; refresh(); };
+  x.send(fd);
+}
+
+async function remove(name) {
+  if (!confirm(`Delete ${name}? Its blocks are removed from every DataNode.`)) return;
+  const r = await fetch("/delete/" + encodeURIComponent(name), { method: "POST" });
+  if (r.ok) say(`Deleted ${name}.`); else say((await r.json()).error || "Delete failed.", true);
+  refresh();
+}
+
+const drop = $("drop"), picker = $("picker");
+drop.addEventListener("click", () => picker.click());
+drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); picker.click(); } });
+picker.addEventListener("change", () => upload(picker.files[0]));
+["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => upload(e.dataTransfer.files[0]));
+
+refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>
